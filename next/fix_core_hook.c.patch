@@ -1,6 +1,6 @@
---- ./kernel/core_hook.c.orig	2025-05-13 05:33:47.746235400 -0400
-+++ ./kernel/core_hook.c	2025-05-13 21:18:33.153308520 -0400
-@@ -997,12 +997,35 @@
+--- ./kernel/core_hook.c	2025-05-22 14:38:43.251286100 -0400
++++ ./kernel/core_hook.c	2025-05-22 15:02:32.003703565 -0400
+@@ -1011,12 +1011,35 @@
  		return;
  	}
  
@@ -36,7 +36,7 @@
  int ksu_handle_setuid(struct cred *new, const struct cred *old)
  {
  	// this hook is used for umounting overlayfs for some uid, if there isn't any module mounted, just ignore it!
-@@ -1081,24 +1104,29 @@
+@@ -1095,25 +1118,30 @@
  		current->pid);
  #endif
  
@@ -46,11 +46,13 @@
 +#else
  	// fixme: use `collect_mounts` and `iterate_mount` to iterate all mountpoint and
  	// filter the mountpoint whose target is `/data/adb`
+-	try_umount("/odm", true, 0);
 -	try_umount("/system", true, 0);
 -	try_umount("/system_ext", true, 0);
 -	try_umount("/vendor", true, 0);
 -	try_umount("/product", true, 0);
 -	try_umount("/data/adb/modules", false, MNT_DETACH);
++	ksu_try_umount("/odm", true, 0);
 +	ksu_try_umount("/system", true, 0);
 +	ksu_try_umount("/system_ext", true, 0);
 +	ksu_try_umount("/vendor", true, 0);
