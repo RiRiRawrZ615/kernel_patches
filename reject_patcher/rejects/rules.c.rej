@@ -1,0 +1,14 @@
+--- kernel/selinux/rules.c
++++ kernel/selinux/rules.c
+@@ -24,9 +24,9 @@ static struct policydb *get_policydb(void)
+ 	return db;
+ }
+ 
+-void apply_kernelsu_rules()
++void ksu_apply_kernelsu_rules()
+ {
+-	if (!getenforce()) {
++	if (!ksu_getenforce()) {
+ 		pr_info("SELinux permissive or disabled, apply rules!\n");
+ 	}
+ 
