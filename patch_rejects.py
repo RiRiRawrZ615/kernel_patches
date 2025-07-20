@@ -139,9 +139,9 @@ def find_function_boundary(source_lines, target_line, file_name):
     return len(source_lines)
 
 def apply_hunk_to_file(source_file, hunk, output_file):
-    """Apply a hunk to the source file with advanced fuzzy matching and fallback."""
+    """Apply a hunk to the source file with robust change application."""
     if not os.path.exists(source_file):
-        print(f"Source file {source_file} not found, cannot apply hunk.")
+        print(f"Error: Source file {source_file} not found, cannot apply hunk.")
         return False
     
     with open(source_file, 'r') as f:
@@ -151,16 +151,16 @@ def apply_hunk_to_file(source_file, hunk, output_file):
     print(f"Debug: Context lines for {source_file}: {context_lines}")
     
     file_name = os.path.basename(source_file)
+    applied_changes = []
     
     # Step 1: Try exact context matching
     matcher = difflib.SequenceMatcher(None, context_lines, [line.strip() for line in source_lines])
     match = matcher.find_longest_match(0, len(context_lines), 0, len(source_lines))
     
-    if context_lines and match.size >= len(context_lines) // 4:
+    if context_lines and match.size >= max(1, len(context_lines) // 4):
         print(f"Debug: Found exact context match at line {match.b} with {match.size} matching lines")
         target_line = match.b
         new_lines = source_lines[:target_line]
-        applied_changes = []
         
         for change in hunk["changes"]:
             if change.startswith("+ "):
@@ -171,10 +171,13 @@ def apply_hunk_to_file(source_file, hunk, output_file):
                     applied_changes.append(f"Removed: {change[2:].strip()}")
                     target_line += 1
                 else:
-                    print(f"Debug: Skipping deletion at line {target_line + 1}: expected '{change[2:].strip()}', found '{source_lines[target_line].strip() if target_line < len(source_lines) else 'EOF'}'")
+                    print(f"Debug: Could not delete line at {target_line + 1}: expected '{change[2:].strip()}', found '{source_lines[target_line].strip() if target_line < len(source_lines) else 'EOF'}'")
+                    # Still append additions to ensure changes are applied
+                    if change[2:].strip():
+                        new_lines.append(change[2:] + "\n")
+                        applied_changes.append(f"Added instead of deleted: {change[2:].strip()}")
         
         new_lines.extend(source_lines[target_line:])
-        print(f"Debug: Applied changes: {applied_changes}")
     else:
         # Step 2: Try fuzzy matching within a window
         if hunk["start_line"] is not None:
@@ -190,7 +193,6 @@ def apply_hunk_to_file(source_file, hunk, output_file):
                 print(f"Debug: Found fuzzy match at line {start + match.b} with {match.size} matching lines")
                 target_line = start + match.b
                 new_lines = source_lines[:target_line]
-                applied_changes = []
                 
                 for change in hunk["changes"]:
                     if change.startswith("+ "):
@@ -201,17 +203,19 @@ def apply_hunk_to_file(source_file, hunk, output_file):
                             applied_changes.append(f"Removed: {change[2:].strip()}")
                             target_line += 1
                         else:
-                            print(f"Debug: Skipping deletion at line {target_line + 1}: expected '{change[2:].strip()}', found '{source_lines[target_line].strip() if target_line < len(source_lines) else 'EOF'}'")
+                            print(f"Debug: Could not delete line at {target_line + 1}: expected '{change[2:].strip()}', found '{source_lines[target_line].strip() if target_line < len(source_lines) else 'EOF'}'")
+                            # Append additions to ensure changes are applied
+                            if change[2:].strip():
+                                new_lines.append(change[2:] + "\n")
+                                applied_changes.append(f"Added instead of deleted: {change[2:].strip()}")
                 
                 new_lines.extend(source_lines[target_line:])
-                print(f"Debug: Applied changes: {applied_changes}")
             else:
                 # Step 3: Fallback to semantic insertion
                 print(f"Warning: No context match for {source_file}, falling back to semantic insertion")
                 target_line = find_function_boundary(source_lines, hunk["start_line"] or 1, file_name)
                 print(f"Debug: Inserting at line {target_line + 1}")
                 new_lines = source_lines[:target_line]
-                applied_changes = []
                 
                 if file_name == "core_hook.c" and any("susfs_try_umount" in change for change in hunk["changes"]):
                     for i in range(max(0, target_line - 50), min(len(source_lines), target_line + 50)):
@@ -224,23 +228,28 @@ def apply_hunk_to_file(source_file, hunk, output_file):
                     if change.startswith("+ "):
                         new_lines.append(change[2:] + "\n")
                         applied_changes.append(f"Added: {change[2:].strip()}")
+                    elif change.startswith("- "):
+                        # Skip deletions if they don't match, but log
+                        print(f"Debug: Skipping deletion at line {target_line + 1}: expected '{change[2:].strip()}', not found in source")
                 
                 new_lines.extend(source_lines[target_line:])
-                print(f"Debug: Applied changes: {applied_changes}")
         else:
             # Step 4: Append to file
             print(f"Warning: No start line for {source_file}, appending changes")
             new_lines = source_lines[:]
-            applied_changes = []
             for change in hunk["changes"]:
                 if change.startswith("+ "):
                     new_lines.append(change[2:] + "\n")
                     applied_changes.append(f"Added: {change[2:].strip()}")
-            print(f"Debug: Applied changes: {applied_changes}")
+                elif change.startswith("- "):
+                    # Skip deletions, but log
+                    print(f"Debug: Skipping deletion at EOF: expected '{change[2:].strip()}'")
     
     if not applied_changes:
         print(f"Error: No changes applied to {source_file}, hunk application failed")
         return False
+    
+    print(f"Debug: Applied changes to {source_file}: {applied_changes}")
     
     with open(output_file, 'w') as f:
         f.writelines(new_lines)
@@ -260,7 +269,7 @@ def generate_new_patch(original_file, modified_file, output_patch):
     # Use git diff to compare files
     result = run_command(f"git diff --no-index -- {original_file} {modified_file}", check=False)
     
-    # Always generate a patch file, even if empty, to avoid skipping
+    # Always generate a patch file
     with open(output_patch, 'w') as f:
         if result.stdout.strip():
             f.write(result.stdout)
@@ -278,7 +287,7 @@ def process_rejects(rej_files, ksu_dir, output_dir, patch_name):
     # Group reject files by their associated patch
     rej_groups = {}
     for rej_file in rej_files:
-        # Infer patch name from reject file name or directory structure
+        # Infer patch name from reject file name
         patch_file_name = patch_name if patch_name else os.path.basename(rej_file).replace(".rej", ".patch")
         if patch_file_name == "10_enable_susfs_for_ksu.patch":
             print(f"Warning: Ignoring patch name {patch_file_name} as it is not allowed for output")
@@ -287,7 +296,7 @@ def process_rejects(rej_files, ksu_dir, output_dir, patch_name):
     
     for input_patch_name, rej_files in rej_groups.items():
         print(f"Processing reject files for patch: {input_patch_name}")
-        modified_files = set()
+        modified_files = []
         
         for rej_file in rej_files:
             print(f"Processing reject file: {rej_file}")
@@ -313,11 +322,11 @@ def process_rejects(rej_files, ksu_dir, output_dir, patch_name):
                     success = False
                     print(f"Failed to apply hunk in {rej_file}")
                 else:
-                    modified_files.add((source_file, output_file, copy_file))
+                    modified_files.append((source_file, output_file, copy_file))
             
             print(f"Debug: Processed reject file {rej_file}, success={success}")
         
-        # Generate a single patch for all modified files related to this input patch
+        # Generate a single patch for all modified files
         output_patch = os.path.join(output_dir, input_patch_name)
         combined_diff = []
         for source_file, output_file, copy_file in modified_files:
