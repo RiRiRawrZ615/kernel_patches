@@ -80,6 +80,10 @@ def parse_reject_file(rej_file):
 
 def apply_hunk_to_file(source_file, hunk, output_file):
     """Apply a hunk to the source file by matching context."""
+    if not os.path.exists(source_file):
+        print(f"Source file {source_file} not found, skipping hunk.")
+        return False
+    
     with open(source_file, 'r') as f:
         source_lines = f.readlines()
     
@@ -113,6 +117,12 @@ def apply_hunk_to_file(source_file, hunk, output_file):
 
 def generate_new_patch(original_file, modified_file, output_patch):
     """Generate a new patch by comparing original and modified files."""
+    if not os.path.exists(original_file):
+        print(f"Original file {original_file} not found, cannot generate patch.")
+        return
+    if not os.path.exists(modified_file):
+        print(f"Modified file {modified_file} not found, cannot generate patch.")
+        return
     run_command(f"diff -u {original_file} {modified_file} > {output_patch}")
 
 def process_rejects(rej_files, ksu_dir, output_dir):
@@ -121,24 +131,23 @@ def process_rejects(rej_files, ksu_dir, output_dir):
     
     for rej_file in rej_files:
         print(f"Processing reject file: {rej_file}")
-        source_file = rej_file.replace(".rej", "")
-        orig_file = source_file + ".orig"
-        copy_file = source_file + ".copy"
-        output_file = source_file
-        
-        if not os.path.exists(orig_file):
-            print(f"Original file {orig_file} not found, skipping.")
-            continue
-        if not os.path.exists(source_file):
-            print(f"Source file {source_file} not found, skipping.")
-            continue
-        
-        shutil.copyfile(source_file, copy_file)
-        
         hunks = parse_reject_file(rej_file)
-        if not hunks:
-            print(f"No valid hunks found in {rej_file}, skipping.")
+        if not hunks or not hunks[0]["file"]:
+            print(f"No valid hunks or file path found in {rej_file}, skipping.")
             continue
+        
+        # Get the target file path from the reject file
+        target_file = hunks[0]["file"]
+        source_file = os.path.join(ksu_dir, target_file)
+        copy_file = os.path.join(output_dir, os.path.basename(target_file) + ".copy")
+        output_file = os.path.join(output_dir, os.path.basename(target_file))
+        
+        if not os.path.exists(source_file):
+            print(f"Source file {source_file} not found in KernelSU-Next, skipping.")
+            continue
+        
+        # Copy the original source file to output directory as .copy
+        shutil.copyfile(source_file, copy_file)
         
         success = True
         for hunk in hunks:
@@ -147,10 +156,9 @@ def process_rejects(rej_files, ksu_dir, output_dir):
                 print(f"Failed to apply hunk in {rej_file}")
         
         if success:
-            rel_path = os.path.relpath(source_file, ksu_dir)
-            patch_name = os.path.basename(rel_path).replace(".c", ".patch")
+            patch_name = os.path.basename(target_file).replace(".c", ".patch")
             output_patch = os.path.join(output_dir, patch_name)
-            generate_new_patch(orig_file, output_file, output_patch)
+            generate_new_patch(copy_file, output_file, output_patch)
             print(f"Generated fixed patch: {output_patch}")
         else:
             print(f"Skipping patch generation for {rej_file} due to application failures.")
@@ -160,6 +168,7 @@ def main():
     parser.add_argument("--ksu-branch", default="next", help="KernelSU-Next branch (e.g., next)")
     parser.add_argument("--susfs-branch", default="gki-android13-5.15", help="susfs4ksu branch (e.g., gki-android13-5.15)")
     parser.add_argument("--repo-dir", default="/path/to/kernel_patches", help="Path to kernel_patches repo")
+    parser.add_argument("--process-rejects-only", type=lambda x: x.lower() == 'true', default=False, help="Process only existing rejects (true/false)")
     args = parser.parse_args()
     
     repo_dir = args.repo_dir
@@ -169,18 +178,23 @@ def main():
     
     ksu_dir, susfs_dir = clone_repos(args.ksu_branch, args.susfs_branch, work_dir)
     
-    patch_file = os.path.join(ksu_dir, "10_enable_susfs_for_ksu.patch")
-    if not os.path.exists(patch_file):
-        print(f"Patch file {patch_file} not found.")
+    rej_files = []
+    if not args.process_rejects_only:
+        patch_file = os.path.join(ksu_dir, "10_enable_susfs_for_ksu.patch")
+        if not os.path.exists(patch_file):
+            print(f"Patch file {patch_file} not found, skipping patch application.")
+        else:
+            rej_files.extend(apply_patch(patch_file, ksu_dir))
+    
+    # Process existing reject files
+    for rej_file in Path(rejects_dir).glob("*.rej"):
+        rej_files.append(str(rej_file))
+    
+    if not rej_files:
+        print("No reject files found to process.")
         return
     
-    rej_files = apply_patch(patch_file, ksu_dir)
-    
     process_rejects(rej_files, ksu_dir, output_dir)
-    
-    for rej_file in Path(rejects_dir).glob("*.rej"):
-        rej_files = [str(rej_file)]
-        process_rejects(rej_files, ksu_dir, output_dir)
 
 if __name__ == "__main__":
     main()
