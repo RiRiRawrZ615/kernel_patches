@@ -101,20 +101,43 @@ def parse_reject_file(rej_file):
     
     return hunks
 
-def find_function_boundary(source_lines, target_line):
-    """Find the nearest function or block boundary before the target line."""
+def find_function_boundary(source_lines, target_line, file_name):
+    """Find the nearest function or block boundary, with special handling for core_hook.c."""
     if not source_lines:
         return 0
     target_line = min(max(0, target_line - 1), len(source_lines) - 1)
+    
+    # Special handling for core_hook.c
+    if file_name.endswith("core_hook.c"):
+        for i in range(target_line, -1, -1):
+            line = source_lines[i].strip()
+            if re.match(r"(static\s+)?void\s+try_umount\s*\(", line) or re.match(r"(static\s+)?void\s+susfs_try_umount\s*\(", line):
+                print(f"Debug: Found try_umount/susfs_try_umount at line {i + 1}")
+                return i + 1
+            if line.startswith("#ifdef CONFIG_KSU_SUSFS"):
+                print(f"Debug: Found #ifdef CONFIG_KSU_SUSFS at line {i + 1}")
+                return i + 1
+        for i in range(target_line, len(source_lines)):
+            line = source_lines[i].strip()
+            if re.match(r"(static\s+)?void\s+try_umount\s*\(", line) or re.match(r"(static\s+)?void\s+susfs_try_umount\s*\(", line):
+                print(f"Debug: Found try_umount/susfs_try_umount at line {i + 1}")
+                return i
+            if line.startswith("#ifdef CONFIG_KSU_SUSFS"):
+                print(f"Debug: Found #ifdef CONFIG_KSU_SUSFS at line {i + 1}")
+                return i
+    # General handling for other files
     for i in range(target_line, -1, -1):
         line = source_lines[i].strip()
-        if line.startswith(("static ", "void ", "int ", "bool ")) or line.endswith("{"):
+        if re.match(r"(static\s+)?(void|int|bool)\s+\w+\s*\(", line) or line.endswith("{"):
+            print(f"Debug: Found function/block boundary at line {i + 1}")
             return i + 1
     for i in range(target_line, len(source_lines)):
         line = source_lines[i].strip()
-        if line.startswith(("static ", "void ", "int ", "bool ")) or line.endswith("{"):
+        if re.match(r"(static\s+)?(void|int|bool)\s+\w+\s*\(", line) or line.endswith("{"):
+            print(f"Debug: Found function/block boundary at line {i + 1}")
             return i
-    return len(source_lines)  # Append to end if no boundary found
+    print(f"Debug: No function/block boundary found, using end of file")
+    return len(source_lines)
 
 def apply_hunk_to_file(source_file, hunk, output_file):
     """Apply a hunk to the source file with advanced fuzzy matching and fallback."""
@@ -127,6 +150,8 @@ def apply_hunk_to_file(source_file, hunk, output_file):
     
     context_lines = [line.strip() for line in hunk["context"] if line.strip()]
     print(f"Debug: Context lines for {source_file}: {context_lines}")
+    
+    file_name = os.path.basename(source_file)
     
     # Step 1: Try exact context matching
     matcher = difflib.SequenceMatcher(None, context_lines, [line.strip() for line in source_lines])
@@ -176,12 +201,12 @@ def apply_hunk_to_file(source_file, hunk, output_file):
             else:
                 # Step 3: Fallback to semantic insertion
                 print(f"Warning: No context match for {source_file}, falling back to semantic insertion")
-                target_line = find_function_boundary(source_lines, hunk["start_line"] or 1)
-                print(f"Debug: Inserting at line {target_line + 1} (nearest function/block boundary)")
+                target_line = find_function_boundary(source_lines, hunk["start_line"] or 1, file_name)
+                print(f"Debug: Inserting at line {target_line + 1}")
                 new_lines = source_lines[:target_line]
                 
-                # Check for related #ifdef block (e.g., CONFIG_KSU_SUSFS)
-                if any("CONFIG_KSU_SUSFS" in change for change in hunk["changes"]):
+                # Special handling for core_hook.c
+                if file_name == "core_hook.c" and any("susfs_try_umount" in change for change in hunk["changes"]):
                     for i in range(max(0, target_line - 50), min(len(source_lines), target_line + 50)):
                         if source_lines[i].strip().startswith("#ifdef CONFIG_KSU_SUSFS"):
                             target_line = i + 1
@@ -194,7 +219,7 @@ def apply_hunk_to_file(source_file, hunk, output_file):
                 
                 new_lines.extend(source_lines[target_line:])
         else:
-            # Step 4: Append to file if no start_line
+            # Step 4: Append to file
             print(f"Warning: No start line for {source_file}, appending changes")
             new_lines = source_lines[:]
             for change in hunk["changes"]:
@@ -280,6 +305,7 @@ def main():
         else:
             rej_files.extend(apply_patch(patch_file, ksu_dir))
     
+    # Always collect .rej files from reject_patcher/rejects
     for rej_file in Path(rejects_dir).glob("*.rej"):
         rej_files.append(str(rej_file))
     
