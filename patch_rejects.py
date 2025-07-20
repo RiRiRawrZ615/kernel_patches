@@ -46,12 +46,32 @@ def parse_reject_file(rej_file):
     with open(rej_file, 'r') as f:
         content = f.read()
     
+    # Log first few lines for debugging
+    lines = content.splitlines()
+    print(f"Debug: First 5 lines of {rej_file}:")
+    for i, line in enumerate(lines[:5]):
+        print(f"Line {i+1}: {line}")
+    
     hunks = []
     current_hunk = None
-    lines = content.splitlines()
     i = 0
     while i < len(lines):
-        if lines[i].startswith("***************"):
+        # Handle unified diff format (@@ -start,count +start,count @@)
+        if lines[i].startswith("@@"):
+            if current_hunk:
+                hunks.append(current_hunk)
+            current_hunk = {"context": [], "changes": [], "file": None}
+            match = re.match(r"@@ -(\d+),(\d+)", lines[i])
+            if match:
+                current_hunk["start_line"] = int(match.group(1))
+                current_hunk["end_line"] = int(match.group(1)) + int(match.group(2)) - 1
+            if i > 0 and lines[i-1].startswith("--- "):
+                current_hunk["file"] = lines[i-1].split()[1]
+            elif i > 1 and lines[i-2].startswith("--- "):
+                current_hunk["file"] = lines[i-2].split()[1]
+            i += 1
+        # Handle traditional reject format (***************)
+        elif lines[i].startswith("***************"):
             if current_hunk:
                 hunks.append(current_hunk)
             current_hunk = {"context": [], "changes": [], "file": None}
@@ -76,6 +96,13 @@ def parse_reject_file(rej_file):
     if current_hunk:
         hunks.append(current_hunk)
     
+    # Fallback: Derive file path from .rej file name if not found
+    if hunks and not any(hunk["file"] for hunk in hunks):
+        derived_file = os.path.basename(rej_file).replace(".rej", "")
+        print(f"Warning: No file path found in {rej_file}, assuming {derived_file}")
+        for hunk in hunks:
+            hunk["file"] = derived_file
+    
     return hunks
 
 def apply_hunk_to_file(source_file, hunk, output_file):
@@ -89,7 +116,7 @@ def apply_hunk_to_file(source_file, hunk, output_file):
     
     context_lines = [line.strip() for line in hunk["context"] if line.strip()]
     if not context_lines:
-        print(f"No context found in hunk, skipping: {hunk}")
+        print(f"No context found in hunk for {source_file}, skipping.")
         return False
     
     matcher = difflib.SequenceMatcher(None, context_lines, [line.strip() for line in source_lines])
@@ -132,11 +159,10 @@ def process_rejects(rej_files, ksu_dir, output_dir):
     for rej_file in rej_files:
         print(f"Processing reject file: {rej_file}")
         hunks = parse_reject_file(rej_file)
-        if not hunks or not hunks[0]["file"]:
+        if not hunks or not any(hunk["file"] for hunk in hunks):
             print(f"No valid hunks or file path found in {rej_file}, skipping.")
             continue
         
-        # Get the target file path from the reject file
         target_file = hunks[0]["file"]
         source_file = os.path.join(ksu_dir, target_file)
         copy_file = os.path.join(output_dir, os.path.basename(target_file) + ".copy")
@@ -146,7 +172,6 @@ def process_rejects(rej_files, ksu_dir, output_dir):
             print(f"Source file {source_file} not found in KernelSU-Next, skipping.")
             continue
         
-        # Copy the original source file to output directory as .copy
         shutil.copyfile(source_file, copy_file)
         
         success = True
@@ -186,7 +211,6 @@ def main():
         else:
             rej_files.extend(apply_patch(patch_file, ksu_dir))
     
-    # Process existing reject files
     for rej_file in Path(rejects_dir).glob("*.rej"):
         rej_files.append(str(rej_file))
     
