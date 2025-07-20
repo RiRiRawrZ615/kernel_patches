@@ -1,0 +1,11 @@
+--- ./kernel/apk_sign.c	2025-07-19 15:34:49.962023700 -0400
++++ ./kernel/apk_sign.c	2025-07-19 15:41:30.015681476 -0400
+@@ -363,7 +363,7 @@
+ 
+ #endif
+ 
+-bool is_manager_apk(char *path)
++bool ksu_is_manager_apk(char *path)
+ {
+ 	int tries = 0;
+ 
