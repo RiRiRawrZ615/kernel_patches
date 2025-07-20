@@ -54,13 +54,15 @@ def parse_reject_file(rej_file):
         if lines[i].startswith("***************"):
             if current_hunk:
                 hunks.append(current_hunk)
-            current_hunk = {"context": [], "changes": []}
+            current_hunk = {"context": [], "changes": [], "file": None}
             i += 1
             if i < len(lines) and lines[i].startswith("***"):
                 match = re.match(r"\*\*\* (\d+),(\d+)", lines[i])
                 if match:
                     current_hunk["start_line"] = int(match.group(1))
                     current_hunk["end_line"] = int(match.group(2))
+                if i > 0 and lines[i-2].startswith("--- "):
+                    current_hunk["file"] = lines[i-2].split()[1]
             i += 1
         elif current_hunk:
             if lines[i].startswith("- ") or lines[i].startswith("+ "):
@@ -155,28 +157,24 @@ def process_rejects(rej_files, ksu_dir, output_dir):
 
 def main():
     parser = argparse.ArgumentParser(description="Automate kernel patch reject fixing.")
-    parser.add_argument("--ksu-branch", default="main", help="KernelSU-Next branch (e.g., main)")
+    parser.add_argument("--ksu-branch", default="next", help="KernelSU-Next branch (e.g., next)")
     parser.add_argument("--susfs-branch", default="gki-android13-5.15", help="susfs4ksu branch (e.g., gki-android13-5.15)")
     parser.add_argument("--repo-dir", default="/path/to/kernel_patches", help="Path to kernel_patches repo")
     args = parser.parse_args()
     
     repo_dir = args.repo_dir
-    patches_dir = os.path.join(repo_dir, "reject_patcher", "patches")
     rejects_dir = os.path.join(repo_dir, "reject_patcher", "rejects")
     output_dir = os.path.join(repo_dir, "reject_patcher", "output")
     work_dir = os.path.join(repo_dir, "work")
     
     ksu_dir, susfs_dir = clone_repos(args.ksu_branch, args.susfs_branch, work_dir)
     
-    patch_file = os.path.join(patches_dir, "10_enable_susfs_for_ksu.patch")
+    patch_file = os.path.join(ksu_dir, "10_enable_susfs_for_ksu.patch")
     if not os.path.exists(patch_file):
         print(f"Patch file {patch_file} not found.")
         return
     
-    shutil.copy(patch_file, ksu_dir)
-    patch_file_in_ksu = os.path.join(ksu_dir, os.path.basename(patch_file))
-    
-    rej_files = apply_patch(patch_file_in_ksu, ksu_dir)
+    rej_files = apply_patch(patch_file, ksu_dir)
     
     process_rejects(rej_files, ksu_dir, output_dir)
     
