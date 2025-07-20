@@ -271,13 +271,13 @@ def process_rejects(rej_files, ksu_dir, output_dir):
                 print(f"Failed to apply hunk in {rej_file}")
         
         if success:
-            patch_name = os.path.basename(target_file).replace(".c", ".patch")
+            patch_name = f"fix_{os.path.basename(target_file).replace('.c', '_patch')}"
             output_patch = os.path.join(output_dir, patch_name)
             generate_new_patch(copy_file, output_file, output_patch)
             print(f"Generated fixed patch: {output_patch}")
         else:
             print(f"Warning: Some hunks failed for {rej_file}, but patch generated for successful hunks")
-            patch_name = os.path.basename(target_file).replace(".c", ".patch")
+            patch_name = f"fix_{os.path.basename(target_file).replace('.c', '_patch')}"
             output_patch = os.path.join(output_dir, patch_name)
             generate_new_patch(copy_file, output_file, output_patch)
             print(f"Generated partial patch: {output_patch}")
