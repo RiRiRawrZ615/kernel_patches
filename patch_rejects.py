@@ -46,7 +46,6 @@ def parse_reject_file(rej_file):
     with open(rej_file, 'r') as f:
         content = f.read()
     
-    # Log first few lines for debugging
     lines = content.splitlines()
     print(f"Debug: First 5 lines of {rej_file}:")
     for i, line in enumerate(lines[:5]):
@@ -56,11 +55,10 @@ def parse_reject_file(rej_file):
     current_hunk = None
     i = 0
     while i < len(lines):
-        # Handle unified diff format (@@ -start,count +start,count @@)
         if lines[i].startswith("@@"):
             if current_hunk:
                 hunks.append(current_hunk)
-            current_hunk = {"context": [], "changes": [], "file": None}
+            current_hunk = {"context": [], "changes": [], "file": None, "start_line": None}
             match = re.match(r"@@ -(\d+),(\d+)", lines[i])
             if match:
                 current_hunk["start_line"] = int(match.group(1))
@@ -70,11 +68,10 @@ def parse_reject_file(rej_file):
             elif i > 1 and lines[i-2].startswith("--- "):
                 current_hunk["file"] = lines[i-2].split()[1]
             i += 1
-        # Handle traditional reject format (***************)
         elif lines[i].startswith("***************"):
             if current_hunk:
                 hunks.append(current_hunk)
-            current_hunk = {"context": [], "changes": [], "file": None}
+            current_hunk = {"context": [], "changes": [], "file": None, "start_line": None}
             i += 1
             if i < len(lines) and lines[i].startswith("***"):
                 match = re.match(r"\*\*\* (\d+),(\d+)", lines[i])
@@ -96,7 +93,6 @@ def parse_reject_file(rej_file):
     if current_hunk:
         hunks.append(current_hunk)
     
-    # Fallback: Derive file path from .rej file name if not found
     if hunks and not any(hunk["file"] for hunk in hunks):
         derived_file = os.path.basename(rej_file).replace(".rej", "")
         print(f"Warning: No file path found in {rej_file}, assuming {derived_file}")
@@ -105,8 +101,16 @@ def parse_reject_file(rej_file):
     
     return hunks
 
+def find_function_boundary(source_lines, target_line):
+    """Find the nearest function or block boundary before the target line."""
+    for i in range(target_line - 1, -1, -1):
+        line = source_lines[i].strip()
+        if line.startswith("static ") or line.startswith("void ") or line.startswith("int ") or line.endswith("{"):
+            return i + 1
+    return target_line
+
 def apply_hunk_to_file(source_file, hunk, output_file):
-    """Apply a hunk to the source file by matching context."""
+    """Apply a hunk to the source file with advanced fuzzy matching and fallback."""
     if not os.path.exists(source_file):
         print(f"Source file {source_file} not found, skipping hunk.")
         return False
@@ -115,31 +119,67 @@ def apply_hunk_to_file(source_file, hunk, output_file):
         source_lines = f.readlines()
     
     context_lines = [line.strip() for line in hunk["context"] if line.strip()]
-    if not context_lines:
-        print(f"No context found in hunk for {source_file}, skipping.")
-        return False
+    print(f"Debug: Context lines for {source_file}: {context_lines}")
     
+    # Step 1: Try exact context matching
     matcher = difflib.SequenceMatcher(None, context_lines, [line.strip() for line in source_lines])
     match = matcher.find_longest_match(0, len(context_lines), 0, len(source_lines))
     
-    if match.size < len(context_lines) // 2:
-        print(f"Could not find reliable context for hunk in {source_file}")
-        return False
-    
-    target_line = match.b
-    new_lines = source_lines[:target_line]
-    
-    for change in hunk["changes"]:
-        if change.startswith("+ "):
-            new_lines.append(change[2:] + "\n")
-        elif change.startswith("- "):
-            target_line += 1
-    
-    new_lines.extend(source_lines[target_line:])
+    if context_lines and match.size >= len(context_lines) // 4:
+        print(f"Debug: Found context match at line {match.b} with {match.size} matching lines")
+        target_line = match.b
+        new_lines = source_lines[:target_line]
+        
+        for change in hunk["changes"]:
+            if change.startswith("+ "):
+                new_lines.append(change[2:] + "\n")
+            elif change.startswith("- "):
+                target_line += 1
+        
+        new_lines.extend(source_lines[target_line:])
+    else:
+        # Step 2: Try fuzzy matching within a window around start_line
+        if hunk["start_line"] is not None:
+            window_size = 50
+            start = max(0, hunk["start_line"] - 1 - window_size)
+            end = min(len(source_lines), hunk["start_line"] - 1 + window_size)
+            window_lines = [line.strip() for line in source_lines[start:end]]
+            
+            matcher = difflib.SequenceMatcher(None, context_lines, window_lines)
+            match = matcher.find_longest_match(0, len(context_lines), 0, len(window_lines))
+            
+            if context_lines and match.size >= 1:  # Allow even a single matching line
+                print(f"Debug: Found fuzzy match at line {start + match.b} with {match.size} matching lines")
+                target_line = start + match.b
+                new_lines = source_lines[:target_line]
+                
+                for change in hunk["changes"]:
+                    if change.startswith("+ "):
+                        new_lines.append(change[2:] + "\n")
+                    elif change.startswith("- "):
+                        target_line += 1
+                
+                new_lines.extend(source_lines[target_line:])
+            else:
+                # Step 3: Fallback to inserting at function boundary or start_line
+                print(f"Warning: No context match for {source_file}, falling back to insertion")
+                target_line = find_function_boundary(source_lines, hunk["start_line"] or 1)
+                print(f"Debug: Inserting at line {target_line} (nearest function/block boundary)")
+                new_lines = source_lines[:target_line]
+                
+                for change in hunk["changes"]:
+                    if change.startswith("+ "):
+                        new_lines.append(change[2:] + "\n")
+                
+                new_lines.extend(source_lines[target_line:])
+        else:
+            print(f"No start line available for {source_file}, skipping hunk.")
+            return False
     
     with open(output_file, 'w') as f:
         f.writelines(new_lines)
     
+    print(f"Debug: Applied changes to {output_file}")
     return True
 
 def generate_new_patch(original_file, modified_file, output_patch):
