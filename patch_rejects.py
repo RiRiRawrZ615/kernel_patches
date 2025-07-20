@@ -103,11 +103,18 @@ def parse_reject_file(rej_file):
 
 def find_function_boundary(source_lines, target_line):
     """Find the nearest function or block boundary before the target line."""
-    for i in range(target_line - 1, -1, -1):
+    if not source_lines:
+        return 0
+    target_line = min(max(0, target_line - 1), len(source_lines) - 1)
+    for i in range(target_line, -1, -1):
         line = source_lines[i].strip()
-        if line.startswith("static ") or line.startswith("void ") or line.startswith("int ") or line.endswith("{"):
+        if line.startswith(("static ", "void ", "int ", "bool ")) or line.endswith("{"):
             return i + 1
-    return target_line
+    for i in range(target_line, len(source_lines)):
+        line = source_lines[i].strip()
+        if line.startswith(("static ", "void ", "int ", "bool ")) or line.endswith("{"):
+            return i
+    return len(source_lines)  # Append to end if no boundary found
 
 def apply_hunk_to_file(source_file, hunk, output_file):
     """Apply a hunk to the source file with advanced fuzzy matching and fallback."""
@@ -134,11 +141,14 @@ def apply_hunk_to_file(source_file, hunk, output_file):
             if change.startswith("+ "):
                 new_lines.append(change[2:] + "\n")
             elif change.startswith("- "):
-                target_line += 1
+                if target_line < len(source_lines) and source_lines[target_line].strip() == change[2:].strip():
+                    target_line += 1
+                else:
+                    print(f"Debug: Skipping deletion at line {target_line + 1}: expected '{change[2:].strip()}', found '{source_lines[target_line].strip() if target_line < len(source_lines) else 'EOF'}'")
         
         new_lines.extend(source_lines[target_line:])
     else:
-        # Step 2: Try fuzzy matching within a window around start_line
+        # Step 2: Try fuzzy matching within a window
         if hunk["start_line"] is not None:
             window_size = 50
             start = max(0, hunk["start_line"] - 1 - window_size)
@@ -148,7 +158,7 @@ def apply_hunk_to_file(source_file, hunk, output_file):
             matcher = difflib.SequenceMatcher(None, context_lines, window_lines)
             match = matcher.find_longest_match(0, len(context_lines), 0, len(window_lines))
             
-            if context_lines and match.size >= 1:  # Allow even a single matching line
+            if context_lines and match.size >= 1:
                 print(f"Debug: Found fuzzy match at line {start + match.b} with {match.size} matching lines")
                 target_line = start + match.b
                 new_lines = source_lines[:target_line]
@@ -157,15 +167,26 @@ def apply_hunk_to_file(source_file, hunk, output_file):
                     if change.startswith("+ "):
                         new_lines.append(change[2:] + "\n")
                     elif change.startswith("- "):
-                        target_line += 1
+                        if target_line < len(source_lines) and source_lines[target_line].strip() == change[2:].strip():
+                            target_line += 1
+                        else:
+                            print(f"Debug: Skipping deletion at line {target_line + 1}: expected '{change[2:].strip()}', found '{source_lines[target_line].strip() if target_line < len(source_lines) else 'EOF'}'")
                 
                 new_lines.extend(source_lines[target_line:])
             else:
-                # Step 3: Fallback to inserting at function boundary or start_line
-                print(f"Warning: No context match for {source_file}, falling back to insertion")
+                # Step 3: Fallback to semantic insertion
+                print(f"Warning: No context match for {source_file}, falling back to semantic insertion")
                 target_line = find_function_boundary(source_lines, hunk["start_line"] or 1)
-                print(f"Debug: Inserting at line {target_line} (nearest function/block boundary)")
+                print(f"Debug: Inserting at line {target_line + 1} (nearest function/block boundary)")
                 new_lines = source_lines[:target_line]
+                
+                # Check for related #ifdef block (e.g., CONFIG_KSU_SUSFS)
+                if any("CONFIG_KSU_SUSFS" in change for change in hunk["changes"]):
+                    for i in range(max(0, target_line - 50), min(len(source_lines), target_line + 50)):
+                        if source_lines[i].strip().startswith("#ifdef CONFIG_KSU_SUSFS"):
+                            target_line = i + 1
+                            print(f"Debug: Adjusted to insert within #ifdef CONFIG_KSU_SUSFS at line {target_line + 1}")
+                            break
                 
                 for change in hunk["changes"]:
                     if change.startswith("+ "):
@@ -173,8 +194,12 @@ def apply_hunk_to_file(source_file, hunk, output_file):
                 
                 new_lines.extend(source_lines[target_line:])
         else:
-            print(f"No start line available for {source_file}, skipping hunk.")
-            return False
+            # Step 4: Append to file if no start_line
+            print(f"Warning: No start line for {source_file}, appending changes")
+            new_lines = source_lines[:]
+            for change in hunk["changes"]:
+                if change.startswith("+ "):
+                    new_lines.append(change[2:] + "\n")
     
     with open(output_file, 'w') as f:
         f.writelines(new_lines)
@@ -226,7 +251,11 @@ def process_rejects(rej_files, ksu_dir, output_dir):
             generate_new_patch(copy_file, output_file, output_patch)
             print(f"Generated fixed patch: {output_patch}")
         else:
-            print(f"Skipping patch generation for {rej_file} due to application failures.")
+            print(f"Warning: Some hunks failed for {rej_file}, but patch generated for successful hunks")
+            patch_name = os.path.basename(target_file).replace(".c", ".patch")
+            output_patch = os.path.join(output_dir, patch_name)
+            generate_new_patch(copy_file, output_file, output_patch)
+            print(f"Generated partial patch: {output_patch}")
 
 def main():
     parser = argparse.ArgumentParser(description="Automate kernel patch reject fixing.")
