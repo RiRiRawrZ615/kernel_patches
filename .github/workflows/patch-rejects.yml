@@ -8,9 +8,9 @@ on:
   workflow_dispatch:
     inputs:
       ksu-branch:
-        description: 'KernelSU-Next branch (e.g., main)'
+        description: 'KernelSU-Next branch (e.g., next)'
         required: true
-        default: 'main'
+        default: 'next'
       susfs-branch:
         description: 'susfs4ksu branch'
         required: true
@@ -45,15 +45,19 @@ jobs:
       run: mkdir -p kernel_patches/work
 
     - name: Clone KernelSU-Next
-      run: git clone -b ${{ github.event.inputs.ksu-branch || 'main' }} https://github.com/KernelSU-Next/KernelSU-Next.git kernel_patches/work/KernelSU-Next
+      run: git clone -b ${{ github.event.inputs.ksu-branch || 'next' }} https://github.com/KernelSU-Next/KernelSU-Next.git kernel_patches/work/KernelSU-Next
 
     - name: Clone susfs4ksu
       run: git clone -b ${{ github.event.inputs.susfs-branch || 'gki-android13-5.15' }} https://gitlab.com/simonpunk/susfs4ksu.git kernel_patches/work/susfs4ksu
 
+    - name: Copy patch from susfs4ksu
+      run: |
+        cp kernel_patches/work/susfs4ksu/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch kernel_patches/work/KernelSU-Next/
+
     - name: Run patch rejects script
       run: |
         python kernel_patches/patch_rejects.py \
-          --ksu-branch ${{ github.event.inputs.ksu-branch || 'main' }} \
+          --ksu-branch ${{ github.event.inputs.ksu-branch || 'next' }} \
           --susfs-branch ${{ github.event.inputs.susfs-branch || 'gki-android13-5.15' }} \
           --repo-dir kernel_patches
 
