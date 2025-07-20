@@ -155,8 +155,8 @@ def process_rejects(rej_files, ksu_dir, output_dir):
 
 def main():
     parser = argparse.ArgumentParser(description="Automate kernel patch reject fixing.")
-    parser.add_argument("--ksu-branch", default="a13-5.15", help="KernelSU-Next branch (e.g., a13-5.15)")
-    parser.add_argument("--susfs-branch", default="a13-5.10", help="susfs4ksu branch (e.g., a13-5.10)")
+    parser.add_argument("--ksu-branch", default="main", help="KernelSU-Next branch (e.g., main)")
+    parser.add_argument("--susfs-branch", default="gki-android13-5.15", help="susfs4ksu branch (e.g., gki-android13-5.15)")
     parser.add_argument("--repo-dir", default="/path/to/kernel_patches", help="Path to kernel_patches repo")
     args = parser.parse_args()
     
@@ -166,7 +166,7 @@ def main():
     output_dir = os.path.join(repo_dir, "reject_patcher", "output")
     work_dir = os.path.join(repo_dir, "work")
     
-    ksu	dir, susfs_dir = clone_repos(args.ksu_branch, args.susfs_branch, work_dir)
+    ksu_dir, susfs_dir = clone_repos(args.ksu_branch, args.susfs_branch, work_dir)
     
     patch_file = os.path.join(patches_dir, "10_enable_susfs_for_ksu.patch")
     if not os.path.exists(patch_file):
@@ -180,8 +180,8 @@ def main():
     
     process_rejects(rej_files, ksu_dir, output_dir)
     
-    for patch_file in Path(rejects_dir).glob("*.rej"):
-        rej_files = [str(patch_file)]
+    for rej_file in Path(rejects_dir).glob("*.rej"):
+        rej_files = [str(rej_file)]
         process_rejects(rej_files, ksu_dir, output_dir)
 
 if __name__ == "__main__":
