@@ -1,0 +1,61 @@
+name: Patch Kernel Rejects
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+    inputs:
+      ksu-branch:
+        description: 'KernelSU-Next branch (e.g., a13-5.15)'
+        required: true
+        default: 'a13-5.15'
+      susfs-branch:
+        description: 'susfs4ksu branch (e.g., a13-5.10)'
+        required: true
+        default: 'a13-5.10'
+
+jobs:
+  patch-rejects:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout kernel_patches repository
+      uses: actions/checkout@v4
+      with:
+        repository: RiRiRawrZ615/kernel_patches
+        path: kernel_patches
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.x'
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y git patch
+
+    - name: Create work directory
+      run: mkdir -p kernel_patches/work
+
+    - name: Clone KernelSU-Next
+      run: git clone -b ${{ github.event.inputs.ksu-branch || 'a13-5.15' }} https://github.com/KernelSU-Next/KernelSU-Next.git kernel_patches/work/KernelSU-Next
+
+    - name: Clone susfs4ksu
+      run: git clone -b ${{ github.event.inputs.susfs-branch || 'a13-5.10' }} https://gitlab.com/simonpunk/susfs4ksu.git kernel_patches/work/susfs4ksu
+
+    - name: Run patch rejects script
+      run: |
+        python kernel_patches/patch_rejects.py \
+          --ksu-branch ${{ github.event.inputs.ksu-branch || 'a13-5.15' }} \
+          --susfs-branch ${{ github.event.inputs.susfs-branch || 'a13-5.10' }} \
+          --repo-dir kernel_patches
+
+    - name: Upload fixed patches
+      uses: actions/upload-artifact@v4
+      with:
+        name: fixed-patches
+        path: kernel_patches/reject_patcher/output/
+        if-no-files-found: warn
