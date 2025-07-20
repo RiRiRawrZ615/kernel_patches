@@ -12,13 +12,18 @@ on:
         required: true
         default: 'next'
       susfs-branch:
-        description: 'susfs4ksu branch'
+        description: 'susfs4ksu branch for reference'
         required: true
         type: choice
         options:
           - gki-android13-5.15
           - gki-android13-5.10
         default: 'gki-android13-5.15'
+      process-rejects-only:
+        description: 'Process only existing rejects (true/false)'
+        required: false
+        type: boolean
+        default: false
 
 jobs:
   patch-rejects:
@@ -47,19 +52,30 @@ jobs:
     - name: Clone KernelSU-Next
       run: git clone -b ${{ github.event.inputs.ksu-branch || 'next' }} https://github.com/KernelSU-Next/KernelSU-Next.git kernel_patches/work/KernelSU-Next
 
-    - name: Clone susfs4ksu
+    - name: Clone susfs4ksu for reference
       run: git clone -b ${{ github.event.inputs.susfs-branch || 'gki-android13-5.15' }} https://gitlab.com/simonpunk/susfs4ksu.git kernel_patches/work/susfs4ksu
 
-    - name: Copy patch from susfs4ksu
+    - name: Clone susfs4ksu master for patch
+      if: ${{ github.event.inputs.process-rejects-only != 'true' }}
+      run: git clone -b master https://gitlab.com/simonpunk/susfs4ksu.git kernel_patches/work/susfs4ksu-master
+
+    - name: Copy patch from susfs4ksu master
+      if: ${{ github.event.inputs.process-rejects-only != 'true' }}
       run: |
-        cp kernel_patches/work/susfs4ksu/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch kernel_patches/work/KernelSU-Next/
+        if [ -f kernel_patches/work/susfs4ksu-master/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch ]; then
+          cp kernel_patches/work/susfs4ksu-master/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch kernel_patches/work/KernelSU-Next/
+        else
+          echo "Patch file not found in susfs4ksu master branch."
+          exit 1
+        fi
 
     - name: Run patch rejects script
       run: |
         python kernel_patches/patch_rejects.py \
           --ksu-branch ${{ github.event.inputs.ksu-branch || 'next' }} \
           --susfs-branch ${{ github.event.inputs.susfs-branch || 'gki-android13-5.15' }} \
-          --repo-dir kernel_patches
+          --repo-dir kernel_patches \
+          --process-rejects-only ${{ github.event.inputs.process-rejects-only || 'false' }}
 
     - name: Upload fixed patches
       uses: actions/upload-artifact@v4
