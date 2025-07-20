@@ -14,8 +14,8 @@ def run_command(command, cwd=None, check=True):
         raise subprocess.CalledProcessError(result.returncode, command)
     return result
 
-def clone_repos(ksu_branch, susfs_branch, work_dir):
-    """Clone KernelSU-Next and susfs4ksu repositories with specified branches."""
+def clone_repos(ksu_branch, susfs_branch, susfs_commit, work_dir):
+    """Clone KernelSU-Next and susfs4ksu repositories with specified branches or commit."""
     os.makedirs(work_dir, exist_ok=True)
     ksu_dir = os.path.join(work_dir, "KernelSU-Next")
     susfs_dir = os.path.join(work_dir, "susfs4ksu")
@@ -24,6 +24,9 @@ def clone_repos(ksu_branch, susfs_branch, work_dir):
         run_command(f"git clone -b {ksu_branch} https://github.com/KernelSU-Next/KernelSU-Next.git", cwd=work_dir)
     if not os.path.exists(susfs_dir):
         run_command(f"git clone -b {susfs_branch} https://gitlab.com/simonpunk/susfs4ksu.git", cwd=work_dir)
+        if susfs_commit:
+            run_command(f"git checkout {susfs_commit}", cwd=susfs_dir)
+            print(f"Checked out susfs4ksu commit {susfs_commit}")
     
     return ksu_dir, susfs_dir
 
@@ -153,12 +156,20 @@ def apply_hunk_to_file(source_file, hunk, output_file):
     file_name = os.path.basename(source_file)
     applied_changes = []
     
+    # Log source file lines around the target line for debugging
+    if hunk["start_line"] is not None:
+        start = max(0, hunk["start_line"] - 5)
+        end = min(len(source_lines), hunk["start_line"] + 5)
+        print(f"Debug: Source file lines around target line {hunk['start_line']}:")
+        for i in range(start, end):
+            print(f"Line {i+1}: {source_lines[i].strip()}")
+    
     # Step 1: Try exact context matching
     matcher = difflib.SequenceMatcher(None, context_lines, [line.strip() for line in source_lines])
     match = matcher.find_longest_match(0, len(context_lines), 0, len(source_lines))
     
-    if context_lines and match.size >= max(1, len(context_lines) // 4):
-        print(f"Debug: Found exact context match at line {match.b} with {match.size} matching lines")
+    if context_lines and match.size >= 1:  # Relaxed threshold to ensure matching
+        print(f"Debug: Found context match at line {match.b} with {match.size} matching lines")
         target_line = match.b
         new_lines = source_lines[:target_line]
         
@@ -171,8 +182,8 @@ def apply_hunk_to_file(source_file, hunk, output_file):
                     applied_changes.append(f"Removed: {change[2:].strip()}")
                     target_line += 1
                 else:
-                    print(f"Debug: Could not delete line at {target_line + 1}: expected '{change[2:].strip()}', found '{source_lines[target_line].strip() if target_line < len(source_lines) else 'EOF'}'")
-                    # Still append additions to ensure changes are applied
+                    print(f"Debug: Failed to delete line at {target_line + 1}: expected '{change[2:].strip()}', found '{source_lines[target_line].strip() if target_line < len(source_lines) else 'EOF'}'")
+                    # Append the line as an addition to ensure changes are applied
                     if change[2:].strip():
                         new_lines.append(change[2:] + "\n")
                         applied_changes.append(f"Added instead of deleted: {change[2:].strip()}")
@@ -189,7 +200,7 @@ def apply_hunk_to_file(source_file, hunk, output_file):
             matcher = difflib.SequenceMatcher(None, context_lines, window_lines)
             match = matcher.find_longest_match(0, len(context_lines), 0, len(window_lines))
             
-            if context_lines and match.size >= 1:
+            if match.size >= 1:  # Relaxed threshold
                 print(f"Debug: Found fuzzy match at line {start + match.b} with {match.size} matching lines")
                 target_line = start + match.b
                 new_lines = source_lines[:target_line]
@@ -203,8 +214,7 @@ def apply_hunk_to_file(source_file, hunk, output_file):
                             applied_changes.append(f"Removed: {change[2:].strip()}")
                             target_line += 1
                         else:
-                            print(f"Debug: Could not delete line at {target_line + 1}: expected '{change[2:].strip()}', found '{source_lines[target_line].strip() if target_line < len(source_lines) else 'EOF'}'")
-                            # Append additions to ensure changes are applied
+                            print(f"Debug: Failed to delete line at {target_line + 1}: expected '{change[2:].strip()}', found '{source_lines[target_line].strip() if target_line < len(source_lines) else 'EOF'}'")
                             if change[2:].strip():
                                 new_lines.append(change[2:] + "\n")
                                 applied_changes.append(f"Added instead of deleted: {change[2:].strip()}")
@@ -229,7 +239,6 @@ def apply_hunk_to_file(source_file, hunk, output_file):
                         new_lines.append(change[2:] + "\n")
                         applied_changes.append(f"Added: {change[2:].strip()}")
                     elif change.startswith("- "):
-                        # Skip deletions if they don't match, but log
                         print(f"Debug: Skipping deletion at line {target_line + 1}: expected '{change[2:].strip()}', not found in source")
                 
                 new_lines.extend(source_lines[target_line:])
@@ -242,11 +251,11 @@ def apply_hunk_to_file(source_file, hunk, output_file):
                     new_lines.append(change[2:] + "\n")
                     applied_changes.append(f"Added: {change[2:].strip()}")
                 elif change.startswith("- "):
-                    # Skip deletions, but log
                     print(f"Debug: Skipping deletion at EOF: expected '{change[2:].strip()}'")
     
     if not applied_changes:
         print(f"Error: No changes applied to {source_file}, hunk application failed")
+        print(f"Debug: Hunk changes attempted: {hunk['changes']}")
         return False
     
     print(f"Debug: Applied changes to {source_file}: {applied_changes}")
@@ -287,7 +296,6 @@ def process_rejects(rej_files, ksu_dir, output_dir, patch_name):
     # Group reject files by their associated patch
     rej_groups = {}
     for rej_file in rej_files:
-        # Infer patch name from reject file name
         patch_file_name = patch_name if patch_name else os.path.basename(rej_file).replace(".rej", ".patch")
         if patch_file_name == "10_enable_susfs_for_ksu.patch":
             print(f"Warning: Ignoring patch name {patch_file_name} as it is not allowed for output")
@@ -349,6 +357,7 @@ def main():
     parser = argparse.ArgumentParser(description="Automate kernel patch reject fixing.")
     parser.add_argument("--ksu-branch", default="next", help="KernelSU-Next branch (e.g., next)")
     parser.add_argument("--susfs-branch", default="gki-android13-5.15", help="susfs4ksu branch (e.g., gki-android13-5.15)")
+    parser.add_argument("--susfs-commit", default=None, help="susfs4ksu commit hash (e.g., abc123)")
     parser.add_argument("--repo-dir", default="/path/to/kernel_patches", help="Path to kernel_patches repo")
     parser.add_argument("--process-rejects-only", type=lambda x: x.lower() == 'true', default=False, help="Process only existing rejects (true/false)")
     parser.add_argument("--patch-name", default=None, help="Name of the input patch file (e.g., fix_apk_sign.c.patch)")
@@ -359,7 +368,7 @@ def main():
     output_dir = os.path.join(repo_dir, "reject_patcher", "output")
     work_dir = os.path.join(repo_dir, "work")
     
-    ksu_dir, susfs_dir = clone_repos(args.ksu_branch, args.susfs_branch, work_dir)
+    ksu_dir, susfs_dir = clone_repos(args.ksu_branch, args.susfs_branch, args.susfs_commit, work_dir)
     
     rej_files = []
     if not args.process_rejects_only:
