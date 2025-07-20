@@ -57,15 +57,22 @@ jobs:
 
     - name: Clone susfs4ksu master for patch
       if: ${{ github.event.inputs.process-rejects-only != 'true' }}
-      run: git clone -b master https://gitlab.com/simonpunk/susfs4ksu.git kernel_patches/work/susfs4ksu-master
+      run: git clone -b master https://gitlab.com/simonpunk/susfs4ksu.git kernel_patches/work/susfs4ksu-master || echo "Failed to clone susfs4ksu master branch."
 
-    - name: Copy patch from susfs4ksu master
+    - name: Copy patch from kernel_patches or susfs4ksu
       if: ${{ github.event.inputs.process-rejects-only != 'true' }}
       run: |
-        if [ -f kernel_patches/work/susfs4ksu-master/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch ]; then
+        if [ -f kernel_patches/next/susfs_fix_patches/v1.5.9/10_enable_susfs_for_ksu.patch ]; then
+          cp kernel_patches/next/susfs_fix_patches/v1.5.9/10_enable_susfs_for_ksu.patch kernel_patches/work/KernelSU-Next/
+          echo "Copied patch from kernel_patches/next/susfs_fix_patches/v1.5.9"
+        elif [ -f kernel_patches/work/susfs4ksu-master/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch ]; then
           cp kernel_patches/work/susfs4ksu-master/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch kernel_patches/work/KernelSU-Next/
+          echo "Copied patch from susfs4ksu master branch."
+        elif [ -f kernel_patches/work/susfs4ksu/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch ]; then
+          cp kernel_patches/work/susfs4ksu/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch kernel_patches/work/KernelSU-Next/
+          echo "Copied patch from susfs4ksu ${{ github.event.inputs.susfs-branch || 'gki-android13-5.15' }} branch."
         else
-          echo "Patch file not found in susfs4ksu master branch."
+          echo "Patch file not found in kernel_patches or susfs4ksu."
           exit 1
         fi
 
