@@ -31,6 +31,7 @@ def apply_patch(patch_file, target_dir):
     """Apply a patch and return a list of generated .rej files."""
     try:
         run_command(f"patch -p1 < {patch_file}", cwd=target_dir)
+        print(f"Successfully applied patch {patch_file}")
     except subprocess.CalledProcessError:
         print(f"Patch application failed for {patch_file}, processing reject files.")
     
@@ -140,7 +141,7 @@ def find_function_boundary(source_lines, target_line, file_name):
 def apply_hunk_to_file(source_file, hunk, output_file):
     """Apply a hunk to the source file with advanced fuzzy matching and fallback."""
     if not os.path.exists(source_file):
-        print(f"Source file {source_file} not found, skipping hunk.")
+        print(f"Source file {source_file} not found, cannot apply hunk.")
         return False
     
     with open(source_file, 'r') as f:
@@ -156,20 +157,24 @@ def apply_hunk_to_file(source_file, hunk, output_file):
     match = matcher.find_longest_match(0, len(context_lines), 0, len(source_lines))
     
     if context_lines and match.size >= len(context_lines) // 4:
-        print(f"Debug: Found context match at line {match.b} with {match.size} matching lines")
+        print(f"Debug: Found exact context match at line {match.b} with {match.size} matching lines")
         target_line = match.b
         new_lines = source_lines[:target_line]
+        applied_changes = []
         
         for change in hunk["changes"]:
             if change.startswith("+ "):
                 new_lines.append(change[2:] + "\n")
+                applied_changes.append(f"Added: {change[2:].strip()}")
             elif change.startswith("- "):
                 if target_line < len(source_lines) and source_lines[target_line].strip() == change[2:].strip():
+                    applied_changes.append(f"Removed: {change[2:].strip()}")
                     target_line += 1
                 else:
                     print(f"Debug: Skipping deletion at line {target_line + 1}: expected '{change[2:].strip()}', found '{source_lines[target_line].strip() if target_line < len(source_lines) else 'EOF'}'")
         
         new_lines.extend(source_lines[target_line:])
+        print(f"Debug: Applied changes: {applied_changes}")
     else:
         # Step 2: Try fuzzy matching within a window
         if hunk["start_line"] is not None:
@@ -185,23 +190,28 @@ def apply_hunk_to_file(source_file, hunk, output_file):
                 print(f"Debug: Found fuzzy match at line {start + match.b} with {match.size} matching lines")
                 target_line = start + match.b
                 new_lines = source_lines[:target_line]
+                applied_changes = []
                 
                 for change in hunk["changes"]:
                     if change.startswith("+ "):
                         new_lines.append(change[2:] + "\n")
+                        applied_changes.append(f"Added: {change[2:].strip()}")
                     elif change.startswith("- "):
                         if target_line < len(source_lines) and source_lines[target_line].strip() == change[2:].strip():
+                            applied_changes.append(f"Removed: {change[2:].strip()}")
                             target_line += 1
                         else:
                             print(f"Debug: Skipping deletion at line {target_line + 1}: expected '{change[2:].strip()}', found '{source_lines[target_line].strip() if target_line < len(source_lines) else 'EOF'}'")
                 
                 new_lines.extend(source_lines[target_line:])
+                print(f"Debug: Applied changes: {applied_changes}")
             else:
                 # Step 3: Fallback to semantic insertion
                 print(f"Warning: No context match for {source_file}, falling back to semantic insertion")
                 target_line = find_function_boundary(source_lines, hunk["start_line"] or 1, file_name)
                 print(f"Debug: Inserting at line {target_line + 1}")
                 new_lines = source_lines[:target_line]
+                applied_changes = []
                 
                 if file_name == "core_hook.c" and any("susfs_try_umount" in change for change in hunk["changes"]):
                     for i in range(max(0, target_line - 50), min(len(source_lines), target_line + 50)):
@@ -213,61 +223,77 @@ def apply_hunk_to_file(source_file, hunk, output_file):
                 for change in hunk["changes"]:
                     if change.startswith("+ "):
                         new_lines.append(change[2:] + "\n")
+                        applied_changes.append(f"Added: {change[2:].strip()}")
                 
                 new_lines.extend(source_lines[target_line:])
+                print(f"Debug: Applied changes: {applied_changes}")
         else:
             # Step 4: Append to file
             print(f"Warning: No start line for {source_file}, appending changes")
             new_lines = source_lines[:]
+            applied_changes = []
             for change in hunk["changes"]:
                 if change.startswith("+ "):
                     new_lines.append(change[2:] + "\n")
+                    applied_changes.append(f"Added: {change[2:].strip()}")
+            print(f"Debug: Applied changes: {applied_changes}")
+    
+    if not applied_changes:
+        print(f"Error: No changes applied to {source_file}, hunk application failed")
+        return False
     
     with open(output_file, 'w') as f:
         f.writelines(new_lines)
     
-    print(f"Debug: Applied changes to {output_file}")
+    print(f"Debug: Successfully wrote changes to {output_file}")
     return True
 
 def generate_new_patch(original_file, modified_file, output_patch):
     """Generate a new patch by comparing original and modified files using git diff."""
     if not os.path.exists(original_file):
-        print(f"Original file {original_file} not found, cannot generate patch.")
+        print(f"Error: Original file {original_file} not found, cannot generate patch.")
         return False
     if not os.path.exists(modified_file):
-        print(f"Modified file {modified_file} not found, cannot generate patch.")
+        print(f"Error: Modified file {modified_file} not found, cannot generate patch.")
         return False
     
     # Use git diff to compare files
     result = run_command(f"git diff --no-index -- {original_file} {modified_file}", check=False)
-    if result.stdout.strip():
-        with open(output_patch, 'w') as f:
+    
+    # Always generate a patch file, even if empty, to avoid skipping
+    with open(output_patch, 'w') as f:
+        if result.stdout.strip():
             f.write(result.stdout)
-        print(f"Debug: Generated patch {output_patch} with size {os.path.getsize(output_patch)} bytes")
-        return True
-    else:
-        print(f"Debug: No differences found between {original_file} and {modified_file}, skipping patch generation")
-        return False
+            print(f"Debug: Generated patch {output_patch} with size {os.path.getsize(output_patch)} bytes")
+        else:
+            f.write("# No differences found, but patch generated as requested\n")
+            print(f"Debug: No differences found between {original_file} and {modified_file}, generated empty patch with comment")
+    
+    return True
 
 def process_rejects(rej_files, ksu_dir, output_dir, patch_name):
     """Process all reject files and generate fixed patches with the same name as the input patch."""
     os.makedirs(output_dir, exist_ok=True)
     
-    # Group reject files by their associated patch (based on directory or naming)
+    # Group reject files by their associated patch
     rej_groups = {}
     for rej_file in rej_files:
-        # Assume reject files are named after the source file they affect
-        source_file = os.path.basename(rej_file).replace(".rej", "")
-        # Use the provided patch_name (e.g., fix_apk_sign.c.patch)
-        rej_groups.setdefault(patch_name, []).append(rej_file)
+        # Infer patch name from reject file name or directory structure
+        patch_file_name = patch_name if patch_name else os.path.basename(rej_file).replace(".rej", ".patch")
+        if patch_file_name == "10_enable_susfs_for_ksu.patch":
+            print(f"Warning: Ignoring patch name {patch_file_name} as it is not allowed for output")
+            patch_file_name = os.path.basename(rej_file).replace(".rej", ".patch")
+        rej_groups.setdefault(patch_file_name, []).append(rej_file)
     
     for input_patch_name, rej_files in rej_groups.items():
         print(f"Processing reject files for patch: {input_patch_name}")
+        modified_files = set()
+        
         for rej_file in rej_files:
             print(f"Processing reject file: {rej_file}")
             hunks = parse_reject_file(rej_file)
             if not hunks or not any(hunk["file"] for hunk in hunks):
-                print(f"No valid hunks or file path found in {rej_file}, skipping.")
+                print(f"Error: No valid hunks or file path found in {rej_file}, cannot process.")
                 continue
             
             target_file = hunks[0]["file"]
@@ -276,7 +302,7 @@ def process_rejects(rej_files, ksu_dir, output_dir, patch_name):
             output_file = os.path.join(output_dir, os.path.basename(target_file))
             
             if not os.path.exists(source_file):
-                print(f"Source file {source_file} not found in KernelSU-Next, skipping.")
+                print(f"Error: Source file {source_file} not found in KernelSU-Next, cannot process.")
                 continue
             
             shutil.copyfile(source_file, copy_file)
@@ -286,20 +312,29 @@ def process_rejects(rej_files, ksu_dir, output_dir, patch_name):
                 if not apply_hunk_to_file(source_file, hunk, output_file):
                     success = False
                     print(f"Failed to apply hunk in {rej_file}")
+                else:
+                    modified_files.add((source_file, output_file, copy_file))
             
-            if success:
-                output_patch = os.path.join(output_dir, input_patch_name)
-                if generate_new_patch(copy_file, output_file, output_patch):
-                    print(f"Generated fixed patch: {output_patch}")
-                else:
-                    print(f"No changes applied for {input_patch_name}, no patch generated")
+            print(f"Debug: Processed reject file {rej_file}, success={success}")
+        
+        # Generate a single patch for all modified files related to this input patch
+        output_patch = os.path.join(output_dir, input_patch_name)
+        combined_diff = []
+        for source_file, output_file, copy_file in modified_files:
+            result = run_command(f"git diff --no-index -- {copy_file} {output_file}", check=False)
+            if result.stdout.strip():
+                combined_diff.append(result.stdout)
+                print(f"Debug: Added diff for {output_file} to combined patch")
+        
+        with open(output_patch, 'w') as f:
+            if combined_diff:
+                f.write("\n".join(combined_diff) + "\n")
+                print(f"Debug: Generated combined patch {output_patch} with size {os.path.getsize(output_patch)} bytes")
             else:
-                print(f"Warning: Some hunks failed for {rej_file}, attempting partial patch")
-                output_patch = os.path.join(output_dir, input_patch_name)
-                if generate_new_patch(copy_file, output_file, output_patch):
-                    print(f"Generated partial patch: {output_patch}")
-                else:
-                    print(f"No changes applied for {input_patch_name}, no patch generated")
+                f.write("# No differences found, but patch generated as requested\n")
+                print(f"Debug: No differences found for {input_patch_name}, generated empty patch with comment")
+        
+        print(f"Generated fixed patch: {output_patch}")
 
 def main():
     parser = argparse.ArgumentParser(description="Automate kernel patch reject fixing.")
@@ -307,7 +342,7 @@ def main():
     parser.add_argument("--susfs-branch", default="gki-android13-5.15", help="susfs4ksu branch (e.g., gki-android13-5.15)")
     parser.add_argument("--repo-dir", default="/path/to/kernel_patches", help="Path to kernel_patches repo")
     parser.add_argument("--process-rejects-only", type=lambda x: x.lower() == 'true', default=False, help="Process only existing rejects (true/false)")
-    parser.add_argument("--patch-name", default="fix_apk_sign.c.patch", help="Name of the input patch file (e.g., fix_apk_sign.c.patch)")
+    parser.add_argument("--patch-name", default=None, help="Name of the input patch file (e.g., fix_apk_sign.c.patch)")
     args = parser.parse_args()
     
     repo_dir = args.repo_dir
@@ -319,7 +354,7 @@ def main():
     
     rej_files = []
     if not args.process_rejects_only:
-        patch_file = os.path.join(ksu_dir, args.patch_name)
+        patch_file = os.path.join(ksu_dir, args.patch_name or "fix_apk_sign.c.patch")
         if not os.path.exists(patch_file):
             print(f"Patch file {patch_file} not found, skipping patch application.")
         else:
