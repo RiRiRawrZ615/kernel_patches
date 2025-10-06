@@ -1,0 +1,37 @@
+From 2f3023dca9460fe4febfa4998abe353c9e716390 Mon Sep 17 00:00:00 2001
+From: pershoot <190600+pershoot@users.noreply.github.com>
+Date: Sun, 5 Oct 2025 00:30:53 -0400
+Subject: [PATCH] kernel: Change ordering to discern skip_check (crowned after
+ private spaces), prior to current_uid_val eval
+
+-This is required for KSU-N and UI helper handling for SuSFS.
+---
+ kernel/core_hook.c | 8 ++++----
+ 1 file changed, 4 insertions(+), 4 deletions(-)
+
+diff --git a/kernel/core_hook.c b/kernel/core_hook.c
+index b942de0cd..0e06d9f92 100644
+--- a/kernel/core_hook.c
++++ b/kernel/core_hook.c
+@@ -290,10 +290,6 @@ int ksu_handle_prctl(int option, unsigned long arg2, unsigned long arg3,
+ 	u32 *result = (u32 *)arg5;
+ 	u32 reply_ok = KERNEL_SU_OPTION;
+ 
+-	// we can skip this check when a manager is crowned already
+-	if (likely(ksu_is_manager_uid_valid()))
+-		goto skip_check;
+-
+ 	// this is mostly for that multiuser bs
+ 	// here we just let them suffer
+ 	uid_t current_uid_val = current_uid().val;
+@@ -301,6 +297,10 @@ int ksu_handle_prctl(int option, unsigned long arg2, unsigned long arg3,
+ 	if (current_uid_val < 100000)
+ 		goto skip_check;
+ 
++	// we can skip this check when a manager is crowned already
++	if (likely(ksu_is_manager_uid_valid()))
++		goto skip_check;
++
+ 	uid_t manager_uid = ksu_get_manager_uid();
+ 	if (current_uid_val != manager_uid && 
+ 		current_uid_val % 100000 == manager_uid) {
